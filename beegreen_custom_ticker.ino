@@ -9,6 +9,7 @@
 #include <ArduinoJson.h>
 #include <INA219.h>
 #include <DoubleResetDetect.h>
+#include <EasyButton.h>
 
 //custom header
 #include "Timer.h"
@@ -24,14 +25,14 @@ LedColor ledColorPicker[2] = {LedColor::RED,LedColor::OFF};
 State deviceState;
 INA219 INA(INA219_I2C_ADDR);
 DoubleResetDetect drd(DRD_TIMEOUT, DRD_ADDRESS);
+EasyButton button(BUTTON_PIN,BUTTON_DEBOUNCE_TIME,false,false);
 
 bool picker = false;
 bool resetTrigger = false;
+bool resetInitiatorMode = false;
 bool mqttloop,firmwareUpdate,firmwareUpdateOngoing;
 float current  = 0;
-volatile unsigned long lastClickTime = 0;
-volatile uint8_t clickCount = 0;
-unsigned long lastButtonCheckTime = 0;
+unsigned long resetModeStartTime = 0;
 
 
 WiFiManager wm;
@@ -81,24 +82,53 @@ void gracefullShutownprep(){
   led.show();
 }
 
-// ISR for button press
-
-// Interrupt handler (IRAM_ATTR for ESP8266)
-void IRAM_ATTR buttonISR() {
-  static unsigned long lastDebounceTime = 0;
-  unsigned long now = millis();
-
-  // Debounce check
-  if (now - lastDebounceTime < DEBOUNCE_DELAY) return;
-  lastDebounceTime = now;
-
-  // Register click
-  if (now - lastClickTime < DOUBLE_CLICK_WINDOW) {
-    clickCount++; // Increment if within double-click window
+void doubleClickHandler() {
+  if (resetInitiatorMode) {
+      Serial.println("Double-click in reset mode - wiping credentials and restarting...");
+      
+      // Wipe WiFi and MQTT credentials
+      wm.resetSettings();
+      
+      // Clear EEPROM
+      EEPROM.begin(sizeof(mqttDetails) + 10);
+      for (int i = 0; i < sizeof(mqttDetails) + 10; i++) {
+          EEPROM.write(i, 0);
+      }
+      EEPROM.commit();
+      EEPROM.end();
+      
+      // Graceful shutdownss
+      gracefullShutownprep();
+      
+      // Restart device
+      delay(1000);
+      ESP.restart();
+      
   } else {
-    clickCount = 1; // Reset if too slow
+      Serial.println("Double-click detected, toggling pump.");
+      if (!digitalRead(MOSFET_PIN)) {
+          pumpStart();
+      } else {
+          pumpStop();
+      }
   }
-  lastClickTime = now;
+}
+            
+void longPressHandler() {
+  if (!resetInitiatorMode) {
+      resetInitiatorMode = true;
+      resetModeStartTime = millis();
+      Serial.println("Reset initiator mode activated - double-click to reset credentials");
+  } else {
+    resetInitiatorMode = false;
+    Serial.println("Reset initiator mode deactivated");
+  }
+}
+
+void buttonISR()
+{
+  // When button is being used through external interrupts, parameter INTERRUPT must be passed to read() function.
+  button.read();
 }
 
 // Method to generate the string in the format "prefix_chipID_last4mac"
@@ -450,6 +480,9 @@ Timer heartBeat(HEARTBEAT_TIMER,Timer::SCHEDULER,[]() {
 Timer setLedColor(500,Timer::SCHEDULER,[](){
   if (firmwareUpdateOngoing){
     ledColorPicker[0] = LedColor::MAGENTA;
+    ledColorPicker[1] = LedColor::MAGENTA;
+  } else if (resetInitiatorMode){
+    ledColorPicker[0] = LedColor::MAGENTA;
     ledColorPicker[1] = LedColor::OFF;
   } else if (deviceState.pumpRunning){
     ledColorPicker[0] = LedColor::BLUE;
@@ -574,7 +607,15 @@ void setup() {
   led.begin();
   led.clear();
   
-  attachInterrupt(digitalPinToInterrupt(BUTTON_PIN), buttonISR, RISING);
+  button.begin();
+  button.onPressedFor(BUTTON_LONG_CLICK_TIME, longPressHandler);
+  button.onSequence(2, BUTTON_DOUBLE_CLICK_TIME, doubleClickHandler);
+
+  if (button.supportsInterrupt())
+  {
+    button.enableInterrupt(buttonISR);
+    Serial.println("Button will be used through interrupts");
+  }
 
   rtc.begin();
 
@@ -593,8 +634,9 @@ void setup() {
 
 void loop() {
   wm.process();
-  // Check WiFi status and attempt reconnection if needed
+  button.update();  // Handle button events - called every loop for responsiveness
   
+  // Check WiFi status and attempt reconnection if needed
   if (WiFi.status() != WL_CONNECTED && !wm.getConfigPortalActive()) {
     static unsigned long lastWifiAttempt = 0;
     if (millis() - lastWifiAttempt > 30000) { // Every 30 seconds
@@ -605,42 +647,11 @@ void loop() {
   }
   mqttClient.loop();
   
- if (clickCount > 0) {
-  // Safely read the volatile variables by temporarily disabling interrupts
-  noInterrupts();
-  uint8_t clicks = clickCount;
-  unsigned long timeOfClick = lastClickTime;
-  interrupts();
-
-  // If two or more clicks are counted, it's a double-click.
-  if (clicks >= 2) {
-   Serial.println("Double-click detected, toggling pump.");
-   if (!digitalRead(MOSFET_PIN)) {
-        pumpStart();
-      } else {
-        pumpStop();
-      }
-
-   // Reset the count immediately so the action doesn't fire again.
-   noInterrupts();
-   clickCount = 0;
-   interrupts();
-
-  } else if (clicks == 1) {
-   // If only one click is registered, wait to see if a second one arrives.
-   if (millis() - timeOfClick > DOUBLE_CLICK_WINDOW) {
-    // The double-click window has expired. It was just a single click.
-    // Reset the counter
-    noInterrupts();
-        // As a final check, only reset if the count is still 1. This prevents a race condition
-        // where a second click could occur right before this reset.
-        if (clickCount == 1) {
-          clickCount = 0;
-        }
-    interrupts();
-   }
+  // Auto-exit reset initiator mode after 10 seconds if no action
+  if (resetInitiatorMode && (millis() - resetModeStartTime > 10000)) {
+    resetInitiatorMode = false;
+    Serial.println("Reset initiator mode timeout - returning to normal mode");
   }
- }
 
   if(mqttloop) {
     connectNetworkStack();
@@ -651,5 +662,4 @@ void loop() {
     checkForOTAUpdate();
     firmwareUpdate = false;
   }
-
 }

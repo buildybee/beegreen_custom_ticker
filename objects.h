@@ -2,7 +2,7 @@
 #define Objects_h
 
 #define PRODUCT_ID "esp7ina219"
-#define FIRMWARE_VERSION "1.3.3"
+#define FIRMWARE_VERSION "1.3.4"
 
 // Define the server and paths for OTA
 #define UPDATEURL "https://raw.githubusercontent.com/buildybee/beegreen-firmware-upgrade/refs/heads/main/esp7ina219.txt"
@@ -47,10 +47,10 @@
 #define POWER_CONSUMPTION_THRESHOLD 50
 #define PING_INTERVAL 6000
 
-
-
-#define DEBOUNCE_DELAY 50        // Debounce delay in milliseconds
-#define DOUBLE_CLICK_WINDOW 500  // Maximum time between clicks for a double-click in milliseconds
+// Button timing constants
+#define BUTTON_DEBOUNCE_TIME 80         // Button debounce time in milliseconds
+#define BUTTON_DOUBLE_CLICK_TIME 1500   // Double click window in milliseconds
+#define BUTTON_LONG_CLICK_TIME 3000     // Long press time in milliseconds
 
 #define DRD_ADDRESS 0x00  // RTC memory address
 #define EEPROM_START_ADDR 0x01 // EEPROM starts after DRD's byte
