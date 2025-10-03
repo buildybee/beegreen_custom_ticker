@@ -10,6 +10,7 @@
 #include <INA219.h>
 #include <DoubleResetDetect.h>
 #include <EasyButton.h>
+#include <Adafruit_AHTX0.h>
 
 //custom header
 #include "Timer.h"
@@ -26,6 +27,8 @@ State deviceState;
 INA219 INA(INA219_I2C_ADDR);
 DoubleResetDetect drd(DRD_TIMEOUT, DRD_ADDRESS);
 EasyButton button(BUTTON_PIN,BUTTON_DEBOUNCE_TIME,false,false);
+Adafruit_AHTX0 aht20;
+bool hasAht20 = false;
 
 bool picker = false;
 bool resetTrigger = false;
@@ -341,6 +344,31 @@ void publishMsg(const char *topic, const char *payload,bool retained){
     }
 }
 
+bool readAHT20() {
+  if (!hasAht20) {
+    return false;
+  }
+
+  sensors_event_t humidityEvent, tempEvent;
+  aht20.getEvent(&humidityEvent, &tempEvent);
+
+  deviceState.temp = tempEvent.temperature;
+  deviceState.humidity = humidityEvent.relative_humidity;
+  return true;
+}
+
+void calibrateAHT20(uint8_t samples = 5, uint16_t settleMs = 50) {
+  if (!hasAht20) {
+    return;
+  }
+  sensors_event_t humidityEvent, tempEvent;
+  for (uint8_t i = 0; i < samples; i++) {
+    aht20.getEvent(&humidityEvent, &tempEvent);
+    delay(settleMs);
+  }
+  deviceState.temp = tempEvent.temperature;
+  deviceState.humidity = humidityEvent.relative_humidity;
+}
 
 void pumpStart(){
   if (!digitalRead(MOSFET_PIN) && (!firmwareUpdate)) {
@@ -473,8 +501,12 @@ void updateAndPublishNextAlarm() {
 
 Timer heartBeat(HEARTBEAT_TIMER,Timer::SCHEDULER,[]() {
     if (mqttClient.connected()) {
-    mqttClient.publish(HEARBEAT_TOPIC, FIRMWARE_VERSION);
-  }
+      String csv = String(FIRMWARE_VERSION);
+    if (readAHT20()) {
+       csv += "," + String(deviceState.temp, 2) + "," + String(deviceState.humidity, 2);
+    }
+   publishMsg(HEARBEAT_TOPIC, csv.c_str(), false);
+    }
 });
 
 Timer setLedColor(500,Timer::SCHEDULER,[](){
@@ -618,6 +650,13 @@ void setup() {
   }
 
   rtc.begin();
+  hasAht20 = aht20.begin();
+  if (hasAht20) {
+    Serial.println("AHT20 detected and initialized");
+    calibrateAHT20();
+  } else {
+    Serial.println("AHT20 not detected");
+  }
 
   #ifdef INA219_I2C_ADDR
     if(INA.begin()) {
