@@ -29,6 +29,9 @@ DoubleResetDetect drd(DRD_TIMEOUT, DRD_ADDRESS);
 EasyButton button(BUTTON_PIN,BUTTON_DEBOUNCE_TIME,false,false);
 Adafruit_AHTX0 aht20;
 bool hasAht20 = false;
+#ifdef INA219_I2C_ADDR
+bool hasIna219 = false;
+#endif
 
 bool picker = false;
 bool resetTrigger = false;
@@ -357,6 +360,18 @@ bool readAHT20() {
   return true;
 }
 
+bool readINA219() {
+  if (!hasIna219) {
+    return false;
+  }
+
+  if (INA.isConnected()) {
+    deviceState.currentConsumption = INA.getCurrent_mA();
+    return true;
+  }
+  return false;
+}
+
 void calibrateAHT20(uint8_t samples = 5, uint16_t settleMs = 50) {
   if (!hasAht20) {
     return;
@@ -503,10 +518,13 @@ Timer heartBeat(HEARTBEAT_TIMER,Timer::SCHEDULER,[]() {
     if (mqttClient.connected()) {
       String csv = String(FIRMWARE_VERSION);
     if (readAHT20()) {
-       csv += "," + String(deviceState.temp, 2) + "," + String(deviceState.humidity, 2);
+      csv += "," + String(deviceState.temp, 2) + "," + String(deviceState.humidity, 2);
     }
-   publishMsg(HEARBEAT_TOPIC, csv.c_str(), false);
+    if (readINA219()) {
+      csv += "," + String(deviceState.currentConsumption, 2);
     }
+    publishMsg(HEARBEAT_TOPIC, csv.c_str(), true);
+  }
 });
 
 Timer setLedColor(500,Timer::SCHEDULER,[](){
@@ -588,17 +606,6 @@ void stopServices() {
 }
 
 
-#ifdef INA219_I2C_ADDR
-  Timer currentConsumption(30000, Timer::SCHEDULER,[]() {
-    if (INA.isConnected() && digitalRead(MOSFET_PIN)) {
-      current  = INA.getCurrent_mA();
-      Serial.println(current);
-      if (current !=0){
-         publishMsg(CURRENT_CONSUMPTION, String(current).c_str(),false);
-      }
-    }
-  });
-#endif
 
 
 void setup() {
@@ -659,9 +666,10 @@ void setup() {
   }
 
   #ifdef INA219_I2C_ADDR
-    if(INA.begin()) {
+    hasIna219 = INA.begin();
+    if(hasIna219) {
         INA.setMaxCurrentShunt(MAX_CURRENT, SHUNT);
-        currentConsumption.start();
+        Serial.println("INA219 detected and initialized");
     } else { Serial.println("INA219: Could not connect. Fix and Reboot"); }
   #endif
 

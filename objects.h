@@ -86,7 +86,7 @@ enum LedColor {
 struct  State {
   float temp;
   float humidity;
-  float currentConsumption = 500.00; //ref value on for testing 
+  float currentConsumption = 0; //ref value on for testing 
   bool autoMode = 0;
   ConnectivityStatus radioStatus = ConnectivityStatus::LOCALNOTCONNECTED;
   bool pumpRunning = false;
