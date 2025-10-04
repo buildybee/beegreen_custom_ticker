@@ -39,6 +39,7 @@ bool resetInitiatorMode = false;
 bool mqttloop,firmwareUpdate,firmwareUpdateOngoing;
 float current  = 0;
 unsigned long resetModeStartTime = 0;
+String deviceBootTime = "";
 
 
 WiFiManager wm;
@@ -470,12 +471,18 @@ void connectNetworkStack() {
   }
 
   if (WiFi.status() == WL_CONNECTED && !mqttClient.connected()) {
-    if (mqttClient.connect("beegreen", mqttDetails.mqtt_user, mqttDetails.mqtt_password)) {
+    // Prepare Last Will message with device power-on time in publishMsg format
+    String willPayload = String("{\"payload\":\"offline\",\"timestamp\":\"") + deviceBootTime + "\"}";
+    String clientId = generateDeviceID();
+    if (mqttClient.connect(clientId.c_str(), mqttDetails.mqtt_user, mqttDetails.mqtt_password,
+                           BEEGREEN_STATUS, 1, true, willPayload.c_str())) {
       mqttClient.subscribe(PUMP_CONTROL_TOPIC);
       mqttClient.subscribe(SET_SCHEDULE);
       mqttClient.subscribe(REQUEST_ALL_SCHEDULES);
       mqttClient.subscribe(GET_UPDATE_REQUEST);
       mqttClient.subscribe(RESTART);
+      // Publish immediate online status with retained flag so STATUS reflects current state
+      publishMsg(BEEGREEN_STATUS, "online", true);
       deviceState.radioStatus = ConnectivityStatus::SERVERCONNECTED;
       return;
     }
@@ -657,6 +664,7 @@ void setup() {
   }
 
   rtc.begin();
+  deviceBootTime = rtc.getCurrentTimestamp();
   hasAht20 = aht20.begin();
   if (hasAht20) {
     Serial.println("AHT20 detected and initialized");
