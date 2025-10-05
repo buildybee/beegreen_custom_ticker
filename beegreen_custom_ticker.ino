@@ -89,27 +89,13 @@ void gracefullShutownprep(){
   pumpStop();
   led.setPixelColor(0,LedColor::OFF);
   led.show();
+  delay(100);
 }
 
 void doubleClickHandler() {
   if (resetInitiatorMode) {
       Serial.println("Double-click in reset mode - wiping credentials and restarting...");
-      
-      // Clear EEPROM
-      EEPROM.begin(sizeof(mqttDetails) + 10);
-      for (int i = 0; i < sizeof(mqttDetails) + 10; i++) {
-          EEPROM.write(i, 0);
-      }
-      EEPROM.commit();
-      EEPROM.end();
-      
-      // Graceful shutdownss
-      gracefullShutownprep();
-      // Wipe WiFi and MQTT credentials
-      wm.resetSettings();
-      // Restart device
-      delay(1000);
-      ESP.restart();
+      wipeCredentialsAndRestart();
       
   } else {
       Serial.println("Double-click detected, toggling pump.");
@@ -119,6 +105,31 @@ void doubleClickHandler() {
           pumpStop();
       }
   }
+}
+
+void enterConfigPortal() {
+  // Disconnect services and cleanly stop peripherals
+  gracefullShutownprep();
+  // Indicate local-only mode and bring up non-blocking config portal AP
+  deviceState.radioStatus = ConnectivityStatus::LOCALNOTCONNECTED;
+  wm.startConfigPortal(generateApSSID().c_str());
+}
+void wipeCredentialsAndRestart() {
+  // Clear EEPROM for stored MQTT details
+  EEPROM.begin(sizeof(mqttDetails) + 10);
+  for (int i = 0; i < sizeof(mqttDetails) + 10; i++) {
+    EEPROM.write(i, 0);
+  }
+  EEPROM.commit();
+  EEPROM.end();
+
+  // Graceful shutdown
+  gracefullShutownprep();
+  // Wipe WiFi and WM settings
+  wm.resetSettings();
+  // Restart device
+  delay(1000);
+  ESP.restart();
 }
             
 void longPressHandler() {
@@ -289,6 +300,8 @@ void mqttCallback(char *topic, byte *payload, unsigned int length) {
   } else if (topicMatchesSuffix(topic, RESTART)) {
     gracefullShutownprep();
     ESP.restart();
+  } else if (topicMatchesSuffix(topic, RESET_SETTINGS)) {
+    enterConfigPortal();
   } else {
     Serial.print("Topic action not found");
   }
@@ -520,6 +533,7 @@ void connectNetworkStack() {
       subscribeMsg(REQUEST_ALL_SCHEDULES);
       subscribeMsg(GET_UPDATE_REQUEST);
       subscribeMsg(RESTART);
+      subscribeMsg(RESET_SETTINGS);
       // Publish immediate online with retain so status reflects current state
       publishMsg(BEEGREEN_STATUS, "online", true);
       publishPowerStatusIfAny();
@@ -655,10 +669,7 @@ void setup() {
   Serial.begin(115200);
   if (drd.detect()) {
     Serial.println("Entering config mode via double reset");
-    wm.resetSettings();
-    Serial.println("Reset done");
-    delay(1000);
-    ESP.restart();
+    wipeCredentialsAndRestart();
   }
 
   firmwareUpdate = false;

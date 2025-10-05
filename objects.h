@@ -25,6 +25,7 @@
 #define NEXT_SCHEDULE "next_schedule_due"
 
 #define RESTART "restart"
+#define RESET_SETTINGS "reset_settings"
 
 // I2C Pins
 #define SDA_PIN 5
