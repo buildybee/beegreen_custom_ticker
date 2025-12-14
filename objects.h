@@ -23,6 +23,7 @@
 #define REQUEST_ALL_SCHEDULES "get_schedules"
 #define GET_ALL_SCHEDULES "get_schedules_response"
 #define NEXT_SCHEDULE "next_schedule_due"
+#define TANK_EMPTY "tank_empty"
 
 #define RESTART "restart"
 #define RESET_SETTINGS "reset_settings"
@@ -48,6 +49,7 @@
 #define LED_BRIGHTNESS 100
 #define POWER_CONSUMPTION_THRESHOLD 50
 #define PING_INTERVAL 6000
+#define CURRENT_CONSUMPTION_THRESHOLD 1200
 
 // Button timing constants
 #define BUTTON_DEBOUNCE_TIME 80         // Button debounce time in milliseconds

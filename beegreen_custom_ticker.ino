@@ -46,6 +46,7 @@ String deviceBootTime = "";
 
 WiFiManager wm;
 MqttCredentials mqttDetails;
+volatile uint8_t lowCurrentBelowThresholdCount = 0;
 // Set up WiFiManager parameters
 WiFiManagerParameter custom_mqtt_server("mqtt_server", "MQTT Server", "", 60);
 WiFiManagerParameter custom_mqtt_port("mqtt_port", "MQTT Port", "", 4);
@@ -436,6 +437,30 @@ void calibrateAHT20(uint8_t samples = 5, uint16_t settleMs = 50) {
   deviceState.humidity = humidityEvent.relative_humidity;
 }
 
+Timer monitorPumpCurrent(1000, Timer::SCHEDULER, []() {
+  if (!deviceState.pumpRunning) {
+    return;
+  }
+  if (readINA219()) {
+    if (deviceState.currentConsumption < CURRENT_CONSUMPTION_THRESHOLD) {
+      lowCurrentBelowThresholdCount++;
+      if (lowCurrentBelowThresholdCount >= 3) {
+        deviceState.waterTankEmpty = true;
+        publishMsg(TANK_EMPTY, "1", true);
+        pumpStop();
+      }
+    } else {
+      lowCurrentBelowThresholdCount = 0;
+    }
+  }
+});
+
+Timer tankEmptyAnnounceAfterStart(3000, Timer::ONESHOT, []() {
+  if (deviceState.pumpRunning && !deviceState.waterTankEmpty) {
+    publishMsg(TANK_EMPTY, "0", true);
+  }
+});
+
 void pumpStart(){
   if (!digitalRead(MOSFET_PIN) && (!firmwareUpdate)) {
     Serial.println("Starting pump");
@@ -444,6 +469,12 @@ void pumpStart(){
     if (mqttClient.connected()) {
       publishMsg(PUMP_STATUS_TOPIC, "on",true);
     }
+    deviceState.waterTankEmpty = false;
+    lowCurrentBelowThresholdCount = 0;
+    if (hasIna219) {
+      monitorPumpCurrent.start();
+    }
+    tankEmptyAnnounceAfterStart.restart();
     return;
   } 
   Serial.println("Pump already in running state or upgrade in progress");
@@ -452,6 +483,9 @@ void pumpStart(){
 void pumpStop() {
   if (digitalRead(MOSFET_PIN)) {
     Serial.println("Stopping pump");
+    monitorPumpCurrent.stop();
+    tankEmptyAnnounceAfterStart.stop();
+    lowCurrentBelowThresholdCount = 0;
     digitalWrite(MOSFET_PIN, LOW);
     deviceState.pumpRunning = false;
     publishMsg(PUMP_STATUS_TOPIC, "off",true);
