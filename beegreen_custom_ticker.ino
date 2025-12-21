@@ -570,6 +570,10 @@ void connectNetworkStack() {
       // Publish immediate online with retain so status reflects current state
       publishMsg(BEEGREEN_STATUS, "online", true);
       publishPowerStatusIfAny();
+      // Publish (and re-evaluate) the next schedule once connected, but only if pump is idle
+      if (!digitalRead(MOSFET_PIN)) {
+        updateAndPublishNextAlarm();
+      }
       deviceState.radioStatus = ConnectivityStatus::SERVERCONNECTED;
       return;
     }
