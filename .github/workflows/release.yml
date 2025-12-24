@@ -3,10 +3,13 @@ name: Release Firmware
 on:
   release:
     types: [created]
+  pull_request:
 
 jobs:
   build:
     runs-on: ubuntu-latest
+    env:
+      FIRMWARE_SUFFIX: ${{ github.event.release.tag_name || replace(github.head_ref || github.ref_name, '/', '-') }}
 
     steps:
     - name: Check out repository
@@ -33,14 +36,21 @@ jobs:
 
     - name: Rename artifact
       run: |
-        mv build/beegreen_custom_ticker.ino.bin build/beegreen_custom_ticker-${{ github.ref_name }}.bin
+        mv build/beegreen_custom_ticker.ino.bin build/beegreen_custom_ticker-${FIRMWARE_SUFFIX}.bin
+
+    - name: Upload build artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: beegreen_custom_ticker-${{ env.FIRMWARE_SUFFIX }}
+        path: build/beegreen_custom_ticker-${{ env.FIRMWARE_SUFFIX }}.bin
 
     - name: Upload firmware to release
+      if: github.event_name == 'release'
       uses: actions/upload-release-asset@v1
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       with:
         upload_url: ${{ github.event.release.upload_url }}
-        asset_path: ./build/beegreen_custom_ticker-${{ github.ref_name }}.bin
-        asset_name: beegreen_custom_ticker-${{ github.ref_name }}.bin
+        asset_path: ./build/beegreen_custom_ticker-${{ env.FIRMWARE_SUFFIX }}.bin
+        asset_name: beegreen_custom_ticker-${{ env.FIRMWARE_SUFFIX }}.bin
         asset_content_type: application/octet-stream 
