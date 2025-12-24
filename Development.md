@@ -6,11 +6,12 @@ All topics are under `<deviceId>/<suffix>`. Payloads are wrapped as `{"payload":
 | topic suffix | Sub/Pub | retained | payload / expectation |
 | --- | --- | --- | --- |
 | `pump_trigger` | Sub | no | integer seconds; `0` stop, `>0` run N sec |
-| `set_schedule` | Sub | no | `index:HH:MM:duration:days:enabled` |
+| `set_schedule` | Sub | no | `index:HH:MM:duration:days:enabled` , index: 0-9 |
 | `get_schedules` | Sub | no | empty payload to request all schedules |
 | `update_firmware_url` | Sub | no | URL string to binary; runs OTA if pump idle |
 | `restart` | Sub | no | any payload; device restarts |
 | `reset_settings` | Sub | no | any payload; enter config portal |
+| `calibrate` | Sub | no | runs a fixed 10s pump calibration to auto-set current threshold |
 | `pump_status` | Pub | yes | `on/off` in payload field with timestamp |
 | `heartbeat` | Pub | yes | CSV: `tempC,humidity,currentmA` (present fields only) |
 | `next_schedule_due` | Pub | yes | timestamp or empty |
@@ -26,7 +27,7 @@ All topics are under `<deviceId>/<suffix>`. Payloads are wrapped as `{"payload":
   Payload: integer seconds. Examples: `300` (run 5 min), `0` (stop).
 
 - Scheduler write `set_schedule`  
-  Payload: `index:HH:MM:durationSec:daysOfWeek:enabled`  
+  Payload: `index:hour:minute:duration:daysOfWeek:enabled`  
   Example: `1:20:30:90:127:1` (slot 1, 20:30, 90s, every day, enabled).
 
 - Scheduler dump `get_schedules_response`  
@@ -52,3 +53,4 @@ Sum the day values you need:
 | Sat | 64 |
 
 Common sums: everyday `127`; weekdays `62`; weekends `65`. Example: disable Tue only → `127 - 4 = 123`.
+

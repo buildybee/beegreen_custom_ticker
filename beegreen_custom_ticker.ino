@@ -38,14 +38,18 @@ bool picker = false;
 bool resetTrigger = false;
 bool resetInitiatorMode = false;
 bool mqttloop,firmwareUpdateOngoing;
-float current  = 0;
+bool isCalibratingCurrent = false;
 unsigned long resetModeStartTime = 0;
 String deviceBootTime = "";
 
 
 WiFiManager wm;
 MqttCredentials mqttDetails;
+const size_t EEPROM_BYTES = sizeof(MqttCredentials) + sizeof(float) + 10;
+const int CURRENT_THRESHOLD_ADDR = EEPROM_START_ADDR + sizeof(MqttCredentials);
 volatile uint8_t lowCurrentBelowThresholdCount = 0;
+float currentConsumptionThreshold = CURRENT_CONSUMPTION_THRESHOLD;
+void calibrateCurrentThreshold();
 // Set up WiFiManager parameters
 WiFiManagerParameter custom_mqtt_server("mqtt_server", "MQTT Server", "", 60);
 WiFiManagerParameter custom_mqtt_port("mqtt_port", "MQTT Port", "", 4);
@@ -116,8 +120,8 @@ void enterConfigPortal() {
 }
 void wipeCredentialsAndRestart() {
   // Clear EEPROM for stored MQTT details
-  EEPROM.begin(sizeof(mqttDetails) + 10);
-  for (int i = 0; i < sizeof(mqttDetails) + 10; i++) {
+  EEPROM.begin(EEPROM_BYTES);
+  for (int i = 0; i < EEPROM_BYTES; i++) {
     EEPROM.write(i, 0);
   }
   EEPROM.commit();
@@ -312,6 +316,8 @@ void mqttCallback(char *topic, byte *payload, unsigned int length) {
     ESP.restart();
   } else if (topicMatchesSuffix(topic, RESET_SETTINGS)) {
     enterConfigPortal();
+  } else if (topicMatchesSuffix(topic, CALIBRATE_TOPIC)) {
+    calibrateCurrentThreshold();
   } else {
     Serial.print("Topic action not found");
   }
@@ -446,12 +452,63 @@ void calibrateAHT20(uint8_t samples = 5, uint16_t settleMs = 50) {
   deviceState.humidity = humidityEvent.relative_humidity;
 }
 
-Timer monitorPumpCurrent(1000, Timer::SCHEDULER, []() {
+void calibrateCurrentThreshold() {
+  if (!hasIna219) {
+    Serial.println("Calibration skipped: INA219 not available.");
+    return;
+  }
+
+  if (deviceState.pumpRunning) {
+    Serial.println("Calibration skipped: pump already running.");
+    return;
+  }
+
+  const uint16_t calibrationSeconds = 10;
+  Serial.printf("Starting current calibration for %u seconds (tank assumed full)\n", calibrationSeconds);
+
+  isCalibratingCurrent = true;
+  lowCurrentBelowThresholdCount = 0;
+  pumpStart();
   if (!deviceState.pumpRunning) {
+    isCalibratingCurrent = false;
+    Serial.println("Calibration aborted: pump failed to start.");
+    return;
+  }
+
+  unsigned long start = millis();
+  float samples = 0;
+  float totalCurrent = 0;
+
+  while (millis() - start < calibrationSeconds * 1000UL) {
+    if (readINA219()) {
+      totalCurrent += deviceState.currentConsumption;
+      samples++;
+    }
+    mqttClient.loop();
+    delay(200);
+  }
+
+  pumpStop();
+  isCalibratingCurrent = false;
+
+  if (samples == 0) {
+    Serial.println("Calibration failed: no current samples captured.");
+    return;
+  }
+
+  float averageCurrent = totalCurrent / samples;
+  currentConsumptionThreshold = max(averageCurrent * 0.7f, 50.0f);
+  Serial.printf("Calibration complete. Average: %.2f mA, threshold set to: %.2f mA\n", averageCurrent, currentConsumptionThreshold);
+
+  eeprom_saveconfig();
+}
+
+Timer monitorPumpCurrent(1000, Timer::SCHEDULER, []() {
+  if (!deviceState.pumpRunning || isCalibratingCurrent) {
     return;
   }
   if (readINA219()) {
-    if (deviceState.currentConsumption < CURRENT_CONSUMPTION_THRESHOLD) {
+    if (deviceState.currentConsumption < currentConsumptionThreshold) {
       lowCurrentBelowThresholdCount++;
       if (lowCurrentBelowThresholdCount >= 3) {
         deviceState.waterTankEmpty = true;
@@ -549,6 +606,7 @@ void connectNetworkStack() {
       subscribeMsg(OTA_URL_TOPIC);
       subscribeMsg(RESTART);
       subscribeMsg(RESET_SETTINGS);
+      subscribeMsg(CALIBRATE_TOPIC);
       // Publish immediate online with retain so status reflects current state
       publishMsg(BEEGREEN_STATUS, "online", true);
       publishMsg(VERSION_TOPIC, FIRMWARE_VERSION, true);
@@ -665,14 +723,20 @@ Timer loopMqtt(5000,Timer::SCHEDULER,[]() {
 });
 
 void eeprom_read() {
-  EEPROM.begin(sizeof(mqttDetails) + 10);
+  EEPROM.begin(EEPROM_BYTES);
   EEPROM.get(EEPROM_START_ADDR, mqttDetails);
+  EEPROM.get(CURRENT_THRESHOLD_ADDR, currentConsumptionThreshold);
   EEPROM.end();
+
+  if (isnan(currentConsumptionThreshold) || currentConsumptionThreshold < 10 || currentConsumptionThreshold > 10000) {
+    currentConsumptionThreshold = CURRENT_CONSUMPTION_THRESHOLD;
+  }
 }
 
 void eeprom_saveconfig() {
-  EEPROM.begin(sizeof(mqttDetails) + 10);
+  EEPROM.begin(EEPROM_BYTES);
   EEPROM.put(EEPROM_START_ADDR, mqttDetails);
+  EEPROM.put(CURRENT_THRESHOLD_ADDR, currentConsumptionThreshold);
   if (EEPROM.commit()){
   EEPROM.end();
   } else { Serial.println ("SAving failed"); }

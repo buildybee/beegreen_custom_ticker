@@ -1,8 +1,8 @@
 #ifndef Objects_h
 #define Objects_h
 
-#define PRODUCT_ID "esp7ina219"
-#define FIRMWARE_VERSION "1.3.4"
+#define PRODUCT_ID "esp12_ina219_pump"
+#define FIRMWARE_VERSION "1.3.5"
 
 // mqtt topics (suffix only; deviceId will prefix at runtime as "<deviceId>/<suffix>")
 #define HEARBEAT_TOPIC "heartbeat"
@@ -14,6 +14,7 @@
 #define SET_SCHEDULE "set_schedule"
 
 #define CURRENT_CONSUMPTION "current_consumption"
+#define CALIBRATE_TOPIC "calibrate"
 #define POWER_STATUS_TOPIC "power_status"
 #define OTA_URL_TOPIC "update_firmware_url"
 #define VERSION_TOPIC "version"
@@ -44,9 +45,7 @@
 
 // opertational constants
 #define LED_BRIGHTNESS 100
-#define POWER_CONSUMPTION_THRESHOLD 50
-#define PING_INTERVAL 6000
-#define CURRENT_CONSUMPTION_THRESHOLD 10
+#define CURRENT_CONSUMPTION_THRESHOLD 1000
 
 // Button timing constants
 #define BUTTON_DEBOUNCE_TIME 80         // Button debounce time in milliseconds
