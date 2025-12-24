@@ -51,20 +51,6 @@
 
 ---
 
-## 📡 MQTT Topics
-
-| Topic                    | Description                      |
-|--------------------------|----------------------------------|
-| `pump/control`           | `1` to start, `0` to stop pump   |
-| `pump/status`            | Publishes `"on"` or `"off"`      |
-| `schedule/set`           | Format: `HH:MM:duration:interval`|
-| `schedule/next`          | Responds with the next schedule  |
-| `current/consumption`    | Publishes pump's current in mA   |
-| `update/request`         | `1` triggers an OTA check        |
-| `device/restart`         | Restarts the ESP8266             |
-| `heartbeat`              | Periodic firmware version ping   |
-
----
 
 ## 🔧 Configuration via Portal
 
@@ -84,22 +70,7 @@ After power-up, if credentials are not saved or the Wi-Fi fails to connect, the 
   - If reset mode is active → resets all saved config and restarts.
   - Else → toggles the pump manually.
 
----
 
-## 🛠️ Setup & Build
+## 📡 MQTT Topics
 
-1. **Install Libraries** (via Library Manager or manually):
-   - `WiFiManager`
-   - `PubSubClient`
-   - `Adafruit NeoPixel`
-   - `Button2`
-   - `ESP8266HTTPClient`, `ESP8266httpUpdate`
-   - `INA219` (any compatible fork)
-   - `ArduinoJson`
-
-2. **Configure Parameters**  
-   In `helper.h` or equivalent:
-   ```cpp
-   #define FIRMWARE_VERSION "1.0.0"
-   #define UPDATEURL "https://yourdomain.com/update/version.txt"
-   #define FIRMWAREDOWNLOAD "https://yourdomain.com/update/"
+- For full topic matrix and payload formats, see [Development.md](Development.md).

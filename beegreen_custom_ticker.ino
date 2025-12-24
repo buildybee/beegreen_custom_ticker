@@ -3,7 +3,6 @@
 #include <WiFiManager.h>        // https://github.com/tzapu/WiFiManager
 #include <PubSubClient.h>       // https://pubsubclient.knolleary.net/api 
 #include <Adafruit_NeoPixel.h>  // https://github.com/adafruit/Adafruit_NeoPixel
-#include <ESP8266HTTPClient.h>
 #include <ESP8266httpUpdate.h>               
 #include <EEPROM.h>            // Use LittleFS instead of SPIFFS
 #include <ArduinoJson.h>
@@ -29,17 +28,28 @@ DoubleResetDetect drd(DRD_TIMEOUT, DRD_ADDRESS);
 EasyButton button(BUTTON_PIN,BUTTON_DEBOUNCE_TIME,false,false);
 Adafruit_AHTX0 aht20;
 bool hasAht20 = false;
+#ifdef INA219_I2C_ADDR
+bool hasIna219 = false;
+#endif
+String deviceId;
+
 
 bool picker = false;
 bool resetTrigger = false;
 bool resetInitiatorMode = false;
-bool mqttloop,firmwareUpdate,firmwareUpdateOngoing;
-float current  = 0;
+bool mqttloop,firmwareUpdateOngoing;
+bool isCalibratingCurrent = false;
 unsigned long resetModeStartTime = 0;
+String deviceBootTime = "";
 
 
 WiFiManager wm;
 MqttCredentials mqttDetails;
+const size_t EEPROM_BYTES = sizeof(MqttCredentials) + sizeof(float) + 10;
+const int CURRENT_THRESHOLD_ADDR = EEPROM_START_ADDR + sizeof(MqttCredentials);
+volatile uint8_t lowCurrentBelowThresholdCount = 0;
+float currentConsumptionThreshold = CURRENT_CONSUMPTION_THRESHOLD;
+void calibrateCurrentThreshold();
 // Set up WiFiManager parameters
 WiFiManagerParameter custom_mqtt_server("mqtt_server", "MQTT Server", "", 60);
 WiFiManagerParameter custom_mqtt_port("mqtt_port", "MQTT Port", "", 4);
@@ -83,29 +93,13 @@ void gracefullShutownprep(){
   pumpStop();
   led.setPixelColor(0,LedColor::OFF);
   led.show();
+  delay(100);
 }
 
 void doubleClickHandler() {
   if (resetInitiatorMode) {
       Serial.println("Double-click in reset mode - wiping credentials and restarting...");
-      
-      // Wipe WiFi and MQTT credentials
-      wm.resetSettings();
-      
-      // Clear EEPROM
-      EEPROM.begin(sizeof(mqttDetails) + 10);
-      for (int i = 0; i < sizeof(mqttDetails) + 10; i++) {
-          EEPROM.write(i, 0);
-      }
-      EEPROM.commit();
-      EEPROM.end();
-      
-      // Graceful shutdownss
-      gracefullShutownprep();
-      
-      // Restart device
-      delay(1000);
-      ESP.restart();
+      wipeCredentialsAndRestart();
       
   } else {
       Serial.println("Double-click detected, toggling pump.");
@@ -115,6 +109,31 @@ void doubleClickHandler() {
           pumpStop();
       }
   }
+}
+
+void enterConfigPortal() {
+  // Disconnect services and cleanly stop peripherals
+  gracefullShutownprep();
+  // Indicate local-only mode and bring up non-blocking config portal AP
+  deviceState.radioStatus = ConnectivityStatus::LOCALNOTCONNECTED;
+  wm.startConfigPortal(generateApSSID().c_str());
+}
+void wipeCredentialsAndRestart() {
+  // Clear EEPROM for stored MQTT details
+  EEPROM.begin(EEPROM_BYTES);
+  for (int i = 0; i < EEPROM_BYTES; i++) {
+    EEPROM.write(i, 0);
+  }
+  EEPROM.commit();
+  EEPROM.end();
+
+  // Graceful shutdown
+  gracefullShutownprep();
+  // Wipe WiFi and WM settings
+  wm.resetSettings();
+  // Restart device
+  delay(1000);
+  ESP.restart();
 }
             
 void longPressHandler() {
@@ -136,18 +155,30 @@ void buttonISR()
 
 // Method to generate the string in the format "prefix_chipID_last4mac"
 String generateDeviceID() {
-  // Get the chip ID
   String chipID = String(WIFI_getChipId(),HEX);
   chipID.toUpperCase();
-  // Get the MAC address
   String macAddress = WiFi.macAddress();
-  macAddress.replace(":", ""); // Remove colons from the MAC address
-  // Extract the last 4 characters of the MAC address
+  macAddress.replace(":", "");
   String last4Mac = macAddress.substring(macAddress.length() - 4);
-  // Combine the prefix, chip ID, and last 4 MAC characters
-  String deviceID = String("BeeGreen") + "_" + chipID + "_" + last4Mac;
+  String deviceID = chipID + "-" + last4Mac;
   return deviceID;
 }
+
+// Check if received topic's last segment matches the last segment of a constant
+static inline bool topicMatchesSuffix(const char* received, const char* fullConst) {
+  const char* r = strrchr(received, '/');
+  r = r ? r + 1 : received;
+  const char* s = strrchr(fullConst, '/');
+  s = s ? s + 1 : fullConst;
+  return strcmp(r, s) == 0;
+}
+
+// Method to generate WiFi AP SSID in format: BEEGREEN-<chipID><last4mac>
+String generateApSSID() {
+  return String("BEEGREEN-") + generateDeviceID();
+}
+
+// remove per-device topic helpers
 
 void wifiScanReport(){
  int n = WiFi.scanNetworks();
@@ -188,10 +219,9 @@ void setupWiFi() {
   //automatically connect using saved credentials if they exist
   //If connection fails it starts an access point with the specified name
 
-  if (wm.autoConnect(generateDeviceID().c_str())) {
+  if (wm.autoConnect(generateApSSID().c_str())) {
     Serial.println("WiFi connected...yeey :)");
     deviceState.radioStatus = ConnectivityStatus::LOCALCONNECTED;
-    checkForOTAUpdate();
     
   } else {
     Serial.println("Configportal running");
@@ -210,39 +240,33 @@ void mqttCallback(char *topic, byte *payload, unsigned int length) {
   payloadStr[length] = '\0';
   Serial.println(payloadStr);
 
-  if (strcmp(topic, PUMP_CONTROL_TOPIC) == 0) {
+  if (topicMatchesSuffix(topic, PUMP_CONTROL_TOPIC)) {
     int duration = atoi(payloadStr);
 
     if (duration == 0) {
-      // If payload is "0", stop the pump.
       pumpStop();
     } else if (duration > 0) {
-      // If payload is a positive number, start the pump with that duration.
       pumpStart();
       rtc.setManualStopTime(duration);
     }
-  } else if (strcmp(topic, SET_SCHEDULE) == 0) {
+  } else if (topicMatchesSuffix(topic, SET_SCHEDULE)) {
     onSetScheduleCallback(payloadStr);
-    // Only apply the changes immediately if the pump is not running.
     if (!digitalRead(MOSFET_PIN)) {
       updateAndPublishNextAlarm();
     }
-  } else if (strcmp(topic, REQUEST_ALL_SCHEDULES) == 0) {
+  } else if (topicMatchesSuffix(topic, REQUEST_ALL_SCHEDULES)) {
     WateringSchedules allSchedules;
     rtc.getSchedules(allSchedules);
 
-    // This JSON document is for building the array. 512 bytes is a safe size.
     DynamicJsonDocument doc(512);
     JsonArray scheduleArray = doc.to<JsonArray>();
 
-    // A small buffer to build each schedule string (max 18 bytes needed)
     char schedule_string[20]; 
     bool schedulesModified = false;
 
     for (int i = 0; i < MAX_SCHEDULES; i++) {
         auto& item = allSchedules.items[i];
 
-        // 1. Validate and fix any corrupt data in RTC memory
         if (item.hour > 23 || item.minute > 59 || item.daysOfWeek > 127) {
             item.hour = 0;
             item.minute = 0;
@@ -252,9 +276,7 @@ void mqttCallback(char *topic, byte *payload, unsigned int length) {
             schedulesModified = true;
         }
 
-        // 2. Add only valid AND enabled schedules to our response array
         if (item.enabled) {
-            // Format: index:hour:minute:duration:daysOfWeek
             snprintf(schedule_string, sizeof(schedule_string), "%d:%d:%d:%u:%d",
                      i,
                      item.hour,
@@ -262,30 +284,41 @@ void mqttCallback(char *topic, byte *payload, unsigned int length) {
                      item.duration_sec,
                      item.daysOfWeek);
             
-            scheduleArray.add(schedule_string);
+                     scheduleArray.add(schedule_string);
         }
     }
 
-    // 3. If data was fixed, write the clean version back to the RTC
     if (schedulesModified) {
         Serial.println("Found and fixed corrupt schedule data in RTC RAM.");
         rtc.setSchedules(allSchedules);
     }
 
-    // 4. Serialize the final JSON array into a single buffer and publish
-    char payload_buffer[256]; // Safely fits the max possible payload (~202 bytes)
+    char payload_buffer[256];
     serializeJson(doc, payload_buffer, sizeof(payload_buffer));
-    
-    mqttClient.publish(GET_ALL_SCHEDULES, payload_buffer);
-  } else if (strcmp(topic, GET_UPDATE_REQUEST) == 0) {
-    if (atoi(payloadStr) == 1) {
-      firmwareUpdate = true;
+    publishMsg(GET_ALL_SCHEDULES, payload_buffer, false);
+  } else if (topicMatchesSuffix(topic, OTA_URL_TOPIC)) {
+    String firmwareUrl(payloadStr);
+    firmwareUrl.trim();
+
+    if (firmwareUrl.length() == 0) {
+      Serial.println("Empty OTA URL payload, ignoring.");
+      return;
     }
-  } else if (strcmp(topic, RESTART) == 0) {
+
+    if (digitalRead(MOSFET_PIN)) {
+      Serial.println("Pump running - OTA update skipped.");
+      return;
+    }
+
+    performOtaUpdate(firmwareUrl.c_str());
+  } else if (topicMatchesSuffix(topic, RESTART)) {
     gracefullShutownprep();
     ESP.restart();
-  }
-   else {
+  } else if (topicMatchesSuffix(topic, RESET_SETTINGS)) {
+    enterConfigPortal();
+  } else if (topicMatchesSuffix(topic, CALIBRATE_TOPIC)) {
+    calibrateCurrentThreshold();
+  } else {
     Serial.print("Topic action not found");
   }
 }
@@ -331,17 +364,54 @@ bool parseSchedulePayload(const char* payload, int& index, ScheduleItem& item) {
 
 void publishMsg(const char *topic, const char *payload,bool retained){
   if (mqttClient.connected()) {
+      // Prefix deviceId to the topic using the last segment as suffix
+      char fullTopic[64];
+      const char* suf = strrchr(topic, '/');
+      suf = suf ? suf + 1 : topic;
+      snprintf(fullTopic, sizeof(fullTopic), "%s/%s", deviceId.c_str(), suf);
+
       String jsonPayload = "{";
-      jsonPayload += "\"payload\":\"";
+      jsonPayload += "\"payload\":";
+      jsonPayload += "\"";
       jsonPayload += payload;
       jsonPayload += "\",";
-      jsonPayload += "\"timestamp\":\"";
+      jsonPayload += "\"timestamp\":";
+      jsonPayload += "\"";
       jsonPayload += rtc.getCurrentTimestamp();
       jsonPayload += "\"";
       jsonPayload += "}";
 
-      mqttClient.publish(topic, jsonPayload.c_str(),retained); // Publish the JSON payload
+      mqttClient.publish(fullTopic, jsonPayload.c_str(),retained);
     }
+}
+
+void publishPowerStatusIfAny(){
+  if (rtc.getPowerFail()) {
+    DateTime pd = rtc.getPowerDown();
+    DateTime pu = rtc.getPowerUp();
+
+    char ton[20];
+    char toff[20];
+    char payload[41];
+
+    snprintf(toff, sizeof(toff), "%04d-%02d-%02d %02d:%02d:%02d",
+             pd.year(), pd.month(), pd.day(), pd.hour(), pd.minute(), pd.second());
+    snprintf(ton, sizeof(ton), "%04d-%02d-%02d %02d:%02d:%02d",
+             pu.year(), pu.month(), pu.day(), pu.hour(), pu.minute(), pu.second());
+    snprintf(payload, sizeof(payload), "off:%s,on:%s", toff, ton);
+    publishMsg(POWER_STATUS_TOPIC, payload, true);
+  } else {
+    publishMsg(POWER_STATUS_TOPIC, "no power failure detected", true);
+  }
+  rtc.clearPowerFail();
+}
+
+static inline void subscribeMsg(const char *topic) {
+  char fullTopic[64];
+  const char* suf = strrchr(topic, '/');
+  suf = suf ? suf + 1 : topic;
+  snprintf(fullTopic, sizeof(fullTopic), "%s/%s", deviceId.c_str(), suf);
+  mqttClient.subscribe(fullTopic);
 }
 
 bool readAHT20() {
@@ -357,6 +427,18 @@ bool readAHT20() {
   return true;
 }
 
+bool readINA219() {
+  if (!hasIna219) {
+    return false;
+  }
+
+  if (INA.isConnected()) {
+    deviceState.currentConsumption = INA.getCurrent_mA();
+    return true;
+  }
+  return false;
+}
+
 void calibrateAHT20(uint8_t samples = 5, uint16_t settleMs = 50) {
   if (!hasAht20) {
     return;
@@ -370,14 +452,95 @@ void calibrateAHT20(uint8_t samples = 5, uint16_t settleMs = 50) {
   deviceState.humidity = humidityEvent.relative_humidity;
 }
 
+void calibrateCurrentThreshold() {
+  if (!hasIna219) {
+    Serial.println("Calibration skipped: INA219 not available.");
+    return;
+  }
+
+  if (deviceState.pumpRunning) {
+    Serial.println("Calibration skipped: pump already running.");
+    return;
+  }
+
+  const uint16_t calibrationSeconds = 10;
+  Serial.printf("Starting current calibration for %u seconds (tank assumed full)\n", calibrationSeconds);
+
+  isCalibratingCurrent = true;
+  lowCurrentBelowThresholdCount = 0;
+  pumpStart();
+  if (!deviceState.pumpRunning) {
+    isCalibratingCurrent = false;
+    Serial.println("Calibration aborted: pump failed to start.");
+    return;
+  }
+
+  unsigned long start = millis();
+  float samples = 0;
+  float totalCurrent = 0;
+
+  while (millis() - start < calibrationSeconds * 1000UL) {
+    if (readINA219()) {
+      totalCurrent += deviceState.currentConsumption;
+      samples++;
+    }
+    mqttClient.loop();
+    delay(200);
+  }
+
+  pumpStop();
+  isCalibratingCurrent = false;
+
+  if (samples == 0) {
+    Serial.println("Calibration failed: no current samples captured.");
+    return;
+  }
+
+  float averageCurrent = totalCurrent / samples;
+  currentConsumptionThreshold = max(averageCurrent * 0.7f, 50.0f);
+  Serial.printf("Calibration complete. Average: %.2f mA, threshold set to: %.2f mA\n", averageCurrent, currentConsumptionThreshold);
+
+  eeprom_saveconfig();
+}
+
+Timer monitorPumpCurrent(1000, Timer::SCHEDULER, []() {
+  if (!deviceState.pumpRunning || isCalibratingCurrent) {
+    return;
+  }
+  if (readINA219()) {
+    if (deviceState.currentConsumption < currentConsumptionThreshold) {
+      lowCurrentBelowThresholdCount++;
+      if (lowCurrentBelowThresholdCount >= 3) {
+        deviceState.waterTankEmpty = true;
+        publishMsg(TANK_EMPTY, "1", true);
+        pumpStop();
+      }
+    } else {
+      lowCurrentBelowThresholdCount = 0;
+    }
+  }
+});
+
+Timer tankEmptyAnnounceAfterStart(3000, Timer::ONESHOT, []() {
+  if (deviceState.pumpRunning && !deviceState.waterTankEmpty) {
+    publishMsg(TANK_EMPTY, "0", true);
+  }
+});
+
 void pumpStart(){
-  if (!digitalRead(MOSFET_PIN) && (!firmwareUpdate)) {
+  if (!digitalRead(MOSFET_PIN) && (!firmwareUpdateOngoing)) {
     Serial.println("Starting pump");
     digitalWrite(MOSFET_PIN, HIGH);
     deviceState.pumpRunning = true;
     if (mqttClient.connected()) {
       publishMsg(PUMP_STATUS_TOPIC, "on",true);
     }
+    deviceState.waterTankEmpty = false;
+    lowCurrentBelowThresholdCount = 0;
+    if (hasIna219) {
+      monitorPumpCurrent.start();
+    }
+    tankEmptyAnnounceAfterStart.restart();
     return;
   } 
   Serial.println("Pump already in running state or upgrade in progress");
@@ -386,66 +549,38 @@ void pumpStart(){
 void pumpStop() {
   if (digitalRead(MOSFET_PIN)) {
     Serial.println("Stopping pump");
+    monitorPumpCurrent.stop();
+    tankEmptyAnnounceAfterStart.stop();
+    lowCurrentBelowThresholdCount = 0;
     digitalWrite(MOSFET_PIN, LOW);
     deviceState.pumpRunning = false;
     publishMsg(PUMP_STATUS_TOPIC, "off",true);
 
-    // Always recalculate the next alarm when the pump stops.
-    // This correctly resumes the schedule after both manual and automatic stops,
-    // and it will apply any schedule updates that were received mid-run.
-    // Recalculate and publish the next due time.
     updateAndPublishNextAlarm();
   } else {
     Serial.println("Pump already in idle state");
   }
 }
 
-void checkForOTAUpdate() {
-  HTTPClient http;
-  Serial.println("Checking for OTA updates...");
-
-  String updateURL = String(UPDATEURL) + "?nocache=" + String(millis()); // Force fresh request
-  if (http.begin(espClient, updateURL)) { 
-    Serial.println("Connected to update server...");
-    http.setTimeout(5000); // Set 5-second timeout
-
-    int httpCode = http.GET(); // Perform GET request to fetch the version file
-    if (httpCode == HTTP_CODE_OK) {
-      String fetchedFirmwareVersionString = http.getString(); // Store the String object
-      fetchedFirmwareVersionString.trim(); // Trim whitespace
-
-      Serial.println("Fetched Firmware Version: " + fetchedFirmwareVersionString);
-      Serial.println("System Firmware Version: " + String(FIRMWARE_VERSION));
-      
-
-      // Compare fetched version with current firmware version
-      if (v1GreaterThanV2(fetchedFirmwareVersionString.c_str(),FIRMWARE_VERSION)) {
-        firmwareUpdateOngoing = true;
-        Serial.println("Update available. Starting OTA...");
-        mqttClient.disconnect(); // Ensure MQTT is disconnected during OTA
-        String firmwareURL = String(FIRMWAREDOWNLOAD)+ fetchedFirmwareVersionString + ".bin";
-        t_httpUpdate_return ret = ESPhttpUpdate.update(espClient, firmwareURL);
-
-        if (ret == HTTP_UPDATE_OK) {
-          Serial.println("OTA Update Successful");
-          gracefullShutownprep();
-          ESP.restart();
-        } else {
-            Serial.printf("HTTP_UPDATE_FAILED Error (%d): %s\n", ESPhttpUpdate.getLastError(), ESPhttpUpdate.getLastErrorString().c_str());
-          firmwareUpdateOngoing = false;
-        }
-      } else {
-        Serial.println("No update available.");
-      }
-    } else {
-      Serial.printf("Failed to fetch update file. HTTP code: %d\n", httpCode);
-    }
-
-    http.end(); // End the HTTP connection
-  } else {
-    Serial.println("Unable to connect to OTA update server.");
+void performOtaUpdate(const char* url) {
+  if (url == nullptr || url[0] == '\0') {
+    Serial.println("Invalid OTA URL.");
+    return;
   }
-  http.end();
+
+  Serial.printf("Starting OTA from URL: %s\n", url);
+  firmwareUpdateOngoing = true;
+  mqttClient.disconnect(); // Avoid MQTT traffic during OTA
+
+  t_httpUpdate_return ret = ESPhttpUpdate.update(espClient, url);
+
+  if (ret == HTTP_UPDATE_OK) {
+    Serial.println("OTA Update Successful");
+    gracefullShutownprep();
+  } else {
+    Serial.printf("HTTP_UPDATE_FAILED Error (%d): %s\n", ESPhttpUpdate.getLastError(), ESPhttpUpdate.getLastErrorString().c_str());
+  }
+  ESP.restart();
 }
 
 void connectNetworkStack() {
@@ -455,12 +590,31 @@ void connectNetworkStack() {
   }
 
   if (WiFi.status() == WL_CONNECTED && !mqttClient.connected()) {
-    if (mqttClient.connect("beegreen", mqttDetails.mqtt_user, mqttDetails.mqtt_password)) {
-      mqttClient.subscribe(PUMP_CONTROL_TOPIC);
-      mqttClient.subscribe(SET_SCHEDULE);
-      mqttClient.subscribe(REQUEST_ALL_SCHEDULES);
-      mqttClient.subscribe(GET_UPDATE_REQUEST);
-      mqttClient.subscribe(RESTART);
+    const char* clientId = deviceId.length() ? deviceId.c_str() : "beegreen";
+    // Build LWT topic (deviceId/suffix of BEEGREEN_STATUS) and payload
+    char willTopic[64];
+    const char* wsuf = strrchr(BEEGREEN_STATUS, '/');
+    wsuf = wsuf ? wsuf + 1 : BEEGREEN_STATUS;
+    snprintf(willTopic, sizeof(willTopic), "%s/%s", deviceId.c_str(), wsuf);
+    String willPayload = String("{\"payload\":\"offline\",\"timestamp\":\"") + deviceBootTime + "\"}";
+
+    if (mqttClient.connect(clientId, mqttDetails.mqtt_user, mqttDetails.mqtt_password,
+                           willTopic, 1, true, willPayload.c_str())) {
+      subscribeMsg(PUMP_CONTROL_TOPIC);
+      subscribeMsg(SET_SCHEDULE);
+      subscribeMsg(REQUEST_ALL_SCHEDULES);
+      subscribeMsg(OTA_URL_TOPIC);
+      subscribeMsg(RESTART);
+      subscribeMsg(RESET_SETTINGS);
+      subscribeMsg(CALIBRATE_TOPIC);
+      // Publish immediate online with retain so status reflects current state
+      publishMsg(BEEGREEN_STATUS, "online", true);
+      publishMsg(VERSION_TOPIC, FIRMWARE_VERSION, true);
+      publishPowerStatusIfAny();
+      // Publish (and re-evaluate) the next schedule once connected, but only if pump is idle
+      if (!digitalRead(MOSFET_PIN)) {
+        updateAndPublishNextAlarm();
+      }
       deviceState.radioStatus = ConnectivityStatus::SERVERCONNECTED;
       return;
     }
@@ -479,11 +633,9 @@ void connectNetworkStack() {
 }
 
 void updateAndPublishNextAlarm() {
-  // Set the next hardware alarm based on the schedule
   bool alarmWasSet = rtc.setNextAlarm();
   
   if (alarmWasSet) {
-    // Get the time that was just set
     DateTime nextAlarm = rtc.getNextDueAlarm();
     
     char buffer[20];
@@ -491,22 +643,31 @@ void updateAndPublishNextAlarm() {
              nextAlarm.year(), nextAlarm.month(), nextAlarm.day(),
              nextAlarm.hour(), nextAlarm.minute(), nextAlarm.second());
              
-    // Publish the message with the retain flag set to true
-    mqttClient.publish(NEXT_SCHEDULE, buffer, true);
+    publishMsg(NEXT_SCHEDULE, buffer, true);
   } else {
-    // If no alarms are set, publish an empty string to clear the retained message
-    mqttClient.publish(NEXT_SCHEDULE, "", true);
+    publishMsg(NEXT_SCHEDULE, "", true);
   }
 }
 
 Timer heartBeat(HEARTBEAT_TIMER,Timer::SCHEDULER,[]() {
     if (mqttClient.connected()) {
-      String csv = String(FIRMWARE_VERSION);
-    if (readAHT20()) {
-       csv += "," + String(deviceState.temp, 2) + "," + String(deviceState.humidity, 2);
-    }
-   publishMsg(HEARBEAT_TOPIC, csv.c_str(), false);
-    }
+      String csv;
+      bool hasField = false;
+      if (readAHT20()) {
+        csv += String(deviceState.temp, 2);
+        csv += ",";
+        csv += String(deviceState.humidity, 2);
+        hasField = true;
+      }
+      if (readINA219()) {
+        if (hasField) {
+          csv += ",";
+        }
+        csv += String(deviceState.currentConsumption, 2);
+        hasField = true;
+      }
+      publishMsg(HEARBEAT_TOPIC, csv.c_str(), true);
+  }
 });
 
 Timer setLedColor(500,Timer::SCHEDULER,[](){
@@ -562,14 +723,20 @@ Timer loopMqtt(5000,Timer::SCHEDULER,[]() {
 });
 
 void eeprom_read() {
-  EEPROM.begin(sizeof(mqttDetails) + 10);
+  EEPROM.begin(EEPROM_BYTES);
   EEPROM.get(EEPROM_START_ADDR, mqttDetails);
+  EEPROM.get(CURRENT_THRESHOLD_ADDR, currentConsumptionThreshold);
   EEPROM.end();
+
+  if (isnan(currentConsumptionThreshold) || currentConsumptionThreshold < 10 || currentConsumptionThreshold > 10000) {
+    currentConsumptionThreshold = CURRENT_CONSUMPTION_THRESHOLD;
+  }
 }
 
 void eeprom_saveconfig() {
-  EEPROM.begin(sizeof(mqttDetails) + 10);
+  EEPROM.begin(EEPROM_BYTES);
   EEPROM.put(EEPROM_START_ADDR, mqttDetails);
+  EEPROM.put(CURRENT_THRESHOLD_ADDR, currentConsumptionThreshold);
   if (EEPROM.commit()){
   EEPROM.end();
   } else { Serial.println ("SAving failed"); }
@@ -588,30 +755,15 @@ void stopServices() {
 }
 
 
-#ifdef INA219_I2C_ADDR
-  Timer currentConsumption(30000, Timer::SCHEDULER,[]() {
-    if (INA.isConnected() && digitalRead(MOSFET_PIN)) {
-      current  = INA.getCurrent_mA();
-      Serial.println(current);
-      if (current !=0){
-         publishMsg(CURRENT_CONSUMPTION, String(current).c_str(),false);
-      }
-    }
-  });
-#endif
 
 
 void setup() {
   Serial.begin(115200);
   if (drd.detect()) {
     Serial.println("Entering config mode via double reset");
-    wm.resetSettings();
-    Serial.println("Reset done");
-    delay(1000);
-    ESP.restart();
+    wipeCredentialsAndRestart();
   }
 
-  firmwareUpdate = false;
   mqttloop = true;
   firmwareUpdateOngoing = false;
   pinMode(MOSFET_PIN, OUTPUT);
@@ -626,6 +778,7 @@ void setup() {
   espClient.setInsecure();
   setupWiFi();
   eeprom_read();
+  deviceId = generateDeviceID();
   Serial.print("Local IP: ");
   Serial.println(WiFi.localIP());
   Serial.println("Mqtt Details:");
@@ -650,6 +803,7 @@ void setup() {
   }
 
   rtc.begin();
+  deviceBootTime = rtc.getCurrentTimestamp();
   hasAht20 = aht20.begin();
   if (hasAht20) {
     Serial.println("AHT20 detected and initialized");
@@ -659,9 +813,10 @@ void setup() {
   }
 
   #ifdef INA219_I2C_ADDR
-    if(INA.begin()) {
+    hasIna219 = INA.begin();
+    if(hasIna219) {
         INA.setMaxCurrentShunt(MAX_CURRENT, SHUNT);
-        currentConsumption.start();
+        Serial.println("INA219 detected and initialized");
     } else { Serial.println("INA219: Could not connect. Fix and Reboot"); }
   #endif
 
@@ -669,6 +824,7 @@ void setup() {
   setLedColor.start();
   alarmHandler.start();
   loopMqtt.start();
+  updateAndPublishNextAlarm();
 }
 
 void loop() {
@@ -695,10 +851,5 @@ void loop() {
   if(mqttloop) {
     connectNetworkStack();
     mqttloop = false;
-  }
-
-  if ((firmwareUpdate) && (!digitalRead(MOSFET_PIN))) {
-    checkForOTAUpdate();
-    firmwareUpdate = false;
   }
 }

@@ -75,6 +75,12 @@ public:
     // Get the current alarms (returns both Alarm 0 and Alarm 1)
     void getAlarms(DateTime &alarm0, DateTime &alarm1);
 
+    // Power fail helpers (proxied from underlying RTC)
+    bool getPowerFail();
+    DateTime getPowerDown();
+    DateTime getPowerUp();
+    bool clearPowerFail();
+
     
 
 

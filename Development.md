@@ -1,126 +1,56 @@
-# BeeGreen Watering System: MQTT API Documentation
+# BeeGreen Watering System: MQTT Topics
 
-This document outlines the MQTT topics and data formats required to communicate with the BeeGreen watering device.
+All topics are under `<deviceId>/<suffix>`. Payloads are wrapped as `{"payload":"<value>","timestamp":"YYYY-MM-DD HH:MM:SS"}` unless noted.
 
-### MQTT Broker Details
-* **Server:** `[Your MQTT Server Address]`
-* **Port:** `[Your MQTT Port]`
-* **Username:** `[Your MQTT Username]`
-* **Password:** `[Your MQTT Password]`
+## Topic matrix
+| topic suffix | Sub/Pub | retained | payload / expectation |
+| --- | --- | --- | --- |
+| `pump_trigger` | Sub | no | integer seconds; `0` stop, `>0` run N sec |
+| `set_schedule` | Sub | no | `index:HH:MM:duration:days:enabled` , index: 0-9 |
+| `get_schedules` | Sub | no | empty payload to request all schedules |
+| `update_firmware_url` | Sub | no | URL string to binary; runs OTA if pump idle |
+| `restart` | Sub | no | any payload; device restarts |
+| `reset_settings` | Sub | no | any payload; enter config portal |
+| `calibrate` | Sub | no | runs a fixed 10s pump calibration to auto-set current threshold |
+| `pump_status` | Pub | yes | `on/off` in payload field with timestamp |
+| `heartbeat` | Pub | yes | CSV: `tempC,humidity,currentmA` (present fields only) |
+| `next_schedule_due` | Pub | yes | timestamp or empty |
+| `get_schedules_response` | Pub | no | JSON array strings: `idx:hr:min:dur:dow` (enabled only) |
+| `tank_empty` | Pub | yes | `1` when dry, `0` after start |
+| `power_status` | Pub | yes | `off:<ts>,on:<ts>` or `no power failure detected` |
+| `status` | Pub | yes | `online` (retained) / LWT `offline` |
+| `version` | Pub | yes | firmware version string on connect |
 
----
-## Device Subscriptions (App → Device)
-These are the topics the app must **publish** to in order to control the device.
+## Payload formats & examples
 
-### 1. Manual Pump Control
-* **Topic:** `beegreen/pump_trigger`
-* **Action:** Manually starts or stops the pump.
-* **Payload Format:** A plain string containing an integer.
-    * **`0`**: Stops the pump immediately.
-    * **`> 0`**: Starts the pump and sets a timer to automatically stop it after the specified number of seconds.
-* **Field Data Type:**
-    * `duration`: `integer`
-* **Examples:**
-    * To start the pump for 5 minutes (300 seconds), send payload: `300`
-    * To stop the pump, send payload: `0`
+- Pump control `pump_trigger`  
+  Payload: integer seconds. Examples: `300` (run 5 min), `0` (stop).
 
-### 2. Set or Update a Schedule
-* **Topic:** `beegreen/set_schedule`
-* **Action:** Creates or modifies one of the 10 available schedule slots (indexed 0-9).
-* **Payload Format:** A colon-delimited string: `index:hour:minute:duration:daysOfWeek:enabled`
-* **Field Data Types:**
-    * `index`: `integer` (Range: 0-9)
-    * `hour`: `integer` (Range: 0-23)
-    * `minute`: `integer` (Range: 0-59)
-    * `duration`: `integer` (Watering time in seconds)
-    * `daysOfWeek`: `integer` (Range: 0-127, see Appendix for calculation)
-    * `enabled`: `integer` (Use `1` for enabled, `0` for disabled)
-* **Example:** To set schedule #1 to run at 8:30 PM for 90 seconds, every day: `"1:20:30:90:127:1"`
+- Scheduler write `set_schedule`  
+  Payload: `index:hour:minute:duration:daysOfWeek:enabled`  
+  Example: `1:20:30:90:127:1` (slot 1, 20:30, 90s, every day, enabled).
 
-### 3. Request All Schedules
-* **Topic:** `beegreen/get_schedules`
-* **Action:** Asks the device to publish its complete list of all 10 configured schedules.
-* **Payload Format:** Can be empty. The device only acts on receiving a message on this topic.
+- Scheduler dump `get_schedules_response`  
+  Payload inside `payload` field is a JSON array of strings. Each string: `index:hour:minute:duration:daysOfWeek` for enabled entries. Example array: `["0:8:30:60:127","1:20:30:90:31"]`.
 
-### 4. Request Firmware Update Check
-* **Topic:** `beegreen/firmware_upgrade`
-* **Action:** Tells the device to check for a new firmware version.
-* **Payload Format:** A plain string containing the integer `1`.
+- Next alarm `next_schedule_due`  
+  Payload: timestamp `YYYY-MM-DD HH:MM:SS` or empty when none.
 
----
-## Device Publications (Device → App)
-These are the topics the app should **subscribe** to in order to receive status and data from the device.
+- Heartbeat `heartbeat`  
+  Payload: CSV of available readings in order: `tempC,humidity,currentmA` (fields omitted if sensor absent). Example: `27.45,58.10,123.00`.
 
-### 1. Pump Status
-* **Topic:** `beegreen/pump_status`
-* **Action:** Published whenever the pump's state changes (on/off).
-* **Payload Format:** JSON object.
-* **Field Data Types:**
-    * `payload`: `string` (Value is either "on" or "off")
-    * `timestamp`: `string` (Format: "YYYY-MM-DD HH:MM:SS")
-* **Example:** `{"payload":"on", "timestamp":"2025-07-02 21:14:03"}`
+## Appendix: days-of-week bitmask
+Sum the day values you need:
 
-### 2. Next Due Schedule (Retained)
-* **Topic:** `beegreen/next_schedule_due`
-* **Action:** A **retained** message that always shows the timestamp of the next scheduled watering event. An empty payload means no schedules are set.
-* **Payload Format:** A plain string timestamp.
-* **Field Data Type:** `string` (Format: "YYYY-MM-DD HH:MM:SS")
-* **Example:** `"2025-07-02 21:30:00"`
+| Day | Value |
+| :-- | :-- |
+| Sun | 1 |
+| Mon | 2 |
+| Tue | 4 |
+| Wed | 8 |
+| Thu | 16 |
+| Fri | 32 |
+| Sat | 64 |
 
-### 3. List of All Schedules
-* **Topic:** `beegreen/get_schedules_response`
-* **Action:** The device's response after a request is made to `beegreen/request_schedules`.
-* **Payload Format:** A JSON array of 10 schedule objects.
-* **Object Field Data Types:**
-    * `index`: `integer`
-    * `hour`: `integer`
-    * `min`: `integer`
-    * `dur`: `integer` (seconds)
-    * `dow`: `integer` (bitmask value)
-    * `en`: `boolean` (true/false)
-* **Example:**
-    ```json
-    [
-      {"index":0,"hour":8,"min":30,"dur":60,"dow":127,"en":true},
-      {"index":1,"hour":20,"min":30,"dur":90,"dow":31,"en":false},
-      ...
-      {"index":9,"hour":0,"min":0,"dur":0,"dow":0,"en":false}
-    ]
-    ```
+Common sums: everyday `127`; weekdays `62`; weekends `65`. Example: disable Tue only → `127 - 4 = 123`.
 
-### 4. Device Heartbeat
-* **Topic:** `beegreen/heartbeat`
-* **Action:** A periodic message indicating the device is online and its current firmware version.
-* **Payload Format:** Plain string.
-* **Field Data Type:** `string`
-* **Example:** `"1.2.4"`
-
----
-## Appendix: Days of Week Bitmask
-The `daysOfWeek` value is an integer calculated by adding the values of the days you want the schedule to run on.
-
-| Day       | Value |
-| :-------- | :---- |
-| Sunday    | 1     |
-| Monday    | 2     |
-| Tuesday   | 4     |
-| Wednesday | 8     |
-| Thursday  | 16    |
-| Friday    | 32    |
-| Saturday  | 64    |
-
-**Examples:**
-* **Weekends (Sat + Sun):** 64 + 1 = `65`
-* **Weekdays (Mon-Fri):** 2 + 4 + 8 + 16 + 32 = `62`
-* **Every Day:** 1 + 2 + 4 + 8 + 16 + 32 + 64 = `127`
-
-### Advanced Example: Excluding a Day
-To exclude a specific day, simply subtract its value from the "Every Day" value of **127**.
-
-For instance, to set a schedule that runs every day **except Tuesday**:
-1.  Start with the value for Every Day: `127`
-2.  Subtract the value for Tuesday: `4`
-3.  The final `daysOfWeek` value is `123`.
-
-**Example Payload:** To set schedule #3 to run at 7:00 AM for 2 minutes (120 seconds) every day except Tuesday, you would publish:
-`"3:07:00:120:123:1"`

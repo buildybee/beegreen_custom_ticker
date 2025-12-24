@@ -160,6 +160,10 @@ bool MCP7940Scheduler::setNextAlarm() {
             rtc.setAlarmState(ALARM::ONTRIGGER, false); // Rollback the ON alarm
             return false;
         }
+        // Defensive: clear any stale latched flags after programming new alarms
+        // This ensures past-due IF bits don't linger across power events.
+        rtc.clearAlarm(ALARM::ONTRIGGER);
+        rtc.clearAlarm(ALARM::OFFTRIGGER);
         return true;
     } 
     
@@ -179,4 +183,20 @@ void MCP7940Scheduler::getAlarms(DateTime &onAlarm, DateTime &offAlarm) {
 
 DateTime MCP7940Scheduler::getNextDueAlarm() const {
     return _nextDueAlarm;
+}
+
+bool MCP7940Scheduler::getPowerFail() {
+    return rtc.getPowerFail();
+}
+
+DateTime MCP7940Scheduler::getPowerDown() {
+    return rtc.getPowerDown();
+}
+
+DateTime MCP7940Scheduler::getPowerUp() {
+    return rtc.getPowerUp();
+}
+
+bool MCP7940Scheduler::clearPowerFail() {
+    return rtc.clearPowerFail();
 }

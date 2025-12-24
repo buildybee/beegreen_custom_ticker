@@ -1,29 +1,30 @@
 #ifndef Objects_h
 #define Objects_h
 
-#define PRODUCT_ID "esp7ina219"
-#define FIRMWARE_VERSION "1.3.4"
+#define PRODUCT_ID "esp12_ina219_pump"
+#define FIRMWARE_VERSION "1.3.5"
 
-// Define the server and paths for OTA
-#define UPDATEURL "https://raw.githubusercontent.com/buildybee/beegreen-firmware-upgrade/refs/heads/main/esp7ina219.txt"
-#define FIRMWAREDOWNLOAD "https://raw.githubusercontent.com/buildybee/beegreen-firmware-upgrade/refs/heads/main/firmware/esp7ina219/"
+// mqtt topics (suffix only; deviceId will prefix at runtime as "<deviceId>/<suffix>")
+#define HEARBEAT_TOPIC "heartbeat"
+#define BEEGREEN_STATUS "status"
 
-// mqtt topics
-#define HEARBEAT_TOPIC "beegreen/heartbeat"
-#define BEEGREEN_STATUS "beegreen/status"
+#define PUMP_CONTROL_TOPIC "pump_trigger"
+#define PUMP_STATUS_TOPIC "pump_status"
 
-#define PUMP_CONTROL_TOPIC "beegreen/pump_trigger"
-#define PUMP_STATUS_TOPIC "beegreen/pump_status"
+#define SET_SCHEDULE "set_schedule"
 
-#define SET_SCHEDULE "beegreen/set_schedule"
+#define CURRENT_CONSUMPTION "current_consumption"
+#define CALIBRATE_TOPIC "calibrate"
+#define POWER_STATUS_TOPIC "power_status"
+#define OTA_URL_TOPIC "update_firmware_url"
+#define VERSION_TOPIC "version"
+#define REQUEST_ALL_SCHEDULES "get_schedules"
+#define GET_ALL_SCHEDULES "get_schedules_response"
+#define NEXT_SCHEDULE "next_schedule_due"
+#define TANK_EMPTY "tank_empty"
 
-#define CURRENT_CONSUMPTION "beegreen/current_consumption"
-#define GET_UPDATE_REQUEST "beegreen/firmware_upgrade"
-#define REQUEST_ALL_SCHEDULES "beegreen/get_schedules"
-#define GET_ALL_SCHEDULES "beegreen/get_schedules_response"
-#define NEXT_SCHEDULE "beegreen/next_schedule_due"
-
-#define RESTART "beegreen/restart"
+#define RESTART "restart"
+#define RESET_SETTINGS "reset_settings"
 
 // I2C Pins
 #define SDA_PIN 5
@@ -44,8 +45,7 @@
 
 // opertational constants
 #define LED_BRIGHTNESS 100
-#define POWER_CONSUMPTION_THRESHOLD 50
-#define PING_INTERVAL 6000
+#define CURRENT_CONSUMPTION_THRESHOLD 1000
 
 // Button timing constants
 #define BUTTON_DEBOUNCE_TIME 80         // Button debounce time in milliseconds
@@ -86,7 +86,7 @@ enum LedColor {
 struct  State {
   float temp;
   float humidity;
-  float currentConsumption = 500.00; //ref value on for testing 
+  float currentConsumption = 0; //ref value on for testing 
   bool autoMode = 0;
   ConnectivityStatus radioStatus = ConnectivityStatus::LOCALNOTCONNECTED;
   bool pumpRunning = false;

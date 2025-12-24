@@ -35,8 +35,11 @@ jobs:
         arduino-cli lib install "PubSubClient"
         arduino-cli lib install "Adafruit NeoPixel"
         arduino-cli lib install "ArduinoJson"
-        arduino-cli lib install "Adafruit INA219"
+        arduino-cli lib install "INA219"
+        arduino-cli lib install "EasyButton"
+        arduino-cli lib install "Adafruit AHTX0"
         arduino-cli lib install "DoubleResetDetect"
+        arduino-cli lib install "NTPClient"
 
     - name: Compile sketch
       run: |
@@ -48,11 +51,13 @@ jobs:
         echo "FIRMWARE_SAFE=$SAFE_SUFFIX" >> "$GITHUB_ENV"
         mv build/beegreen_custom_ticker.ino.bin build/beegreen_custom_ticker-${SAFE_SUFFIX}.bin
 
-    - name: Upload build artifact
+    - name: Upload build artifact (PRs only)
+      if: github.event_name != 'release'
       uses: actions/upload-artifact@v4
       with:
         name: beegreen_custom_ticker-${{ env.FIRMWARE_SAFE }}
         path: build/beegreen_custom_ticker-${{ env.FIRMWARE_SAFE }}.bin
+        compression-level: 0
 
     - name: Upload firmware to release
       if: github.event_name == 'release'
