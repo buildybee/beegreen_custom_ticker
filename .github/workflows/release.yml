@@ -40,7 +40,7 @@ jobs:
 
     - name: Compile sketch
       run: |
-        arduino-cli compile --fqbn esp8266:esp8266:nodemcuv2 --output-dir build beegreen_custom_ticker.ino
+        arduino-cli compile --fqbn esp8266:esp8266:nodemcuv2 --output-dir build "${{ github.workspace }}/beegreen_custom_ticker.ino"
 
     - name: Normalize artifact name
       run: |
