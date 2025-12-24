@@ -15,7 +15,6 @@
 #include "Timer.h"
 #include "objects.h"
 #include "MCP7940_Scheduler.h"
-#include "helper.h"
 
 BearSSL::WiFiClientSecure espClient;
 PubSubClient mqttClient(espClient);
